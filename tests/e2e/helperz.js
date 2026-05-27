@@ -360,20 +360,73 @@ export async function goBack() {
 
   // Try each back/close affordance in order; retry the full set up to 10 times.
   const candidates = [by.id('BackButton'), by.id('NavigationCloseButton'), by.label('Back'), by.text('Close')];
+  const candidateNames = ['id=BackButton', 'id=NavigationCloseButton', 'label=Back', 'text=Close'];
 
+  // iOS duplicates the nav back button's accessibility id: index 0 is the
+  // non-hittable _UIButtonBarButton wrapper, index 1 the hittable
+  // UIAccessibilityBackButtonElement. Their order is not deterministic, so try both.
+  let lastErr;
   for (let attempt = 0; attempt < 10; attempt++) {
-    for (const matcher of candidates) {
-      try {
-        await element(matcher).atIndex(0).tap();
-        return;
-      } catch (_) {
-        /* try next */
+    for (let i = 0; i < candidates.length; i++) {
+      for (let idx = 0; idx < 2; idx++) {
+        try {
+          await element(candidates[i]).atIndex(idx).tap();
+          console.log(`goBack: tapped ${candidateNames[i]} atIndex(${idx}) on attempt ${attempt}`);
+          return;
+        } catch (err) {
+          lastErr = err;
+        }
       }
     }
     await sleep(500);
   }
 
-  rethrowWithCallsite(new Error('goBack: no back/close affordance tappable after 10 attempts.'), callsite);
+  // All attempts failed — collect debug info before throwing.
+  const stamp = `goBack-failed-${Date.now()}`;
+  let screenshotPath = null;
+  let hierarchyPath = null;
+  try {
+    screenshotPath = await device.takeScreenshot(stamp);
+  } catch (e) {
+    console.warn('goBack: takeScreenshot failed:', e && e.message ? e.message : e);
+  }
+  try {
+    hierarchyPath = await device.captureViewHierarchy(stamp);
+  } catch (e) {
+    console.warn('goBack: captureViewHierarchy failed:', e && e.message ? e.message : e);
+  }
+
+  const seen = [];
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      const attrs = await element(candidates[i]).atIndex(0).getAttributes();
+      seen.push(`  ${candidateNames[i]}: ${JSON.stringify(attrs)}`);
+    } catch (e) {
+      const msg = e && e.message ? e.message.split('\n')[0] : String(e);
+      seen.push(`  ${candidateNames[i]}: <not found> (${msg})`);
+    }
+  }
+
+  const origMsg = lastErr && lastErr.message ? lastErr.message : String(lastErr);
+  console.error(
+    [
+      'goBack: no back/close affordance tappable after 10 attempts.',
+      `  screenshot:     ${screenshotPath}`,
+      `  viewHierarchy:  ${hierarchyPath}`,
+      '  candidate probe:',
+      ...seen,
+      '  original error:',
+      origMsg,
+      lastErr && lastErr.stack ? lastErr.stack : '',
+    ].join('\n'),
+  );
+
+  const wrapped = new Error(
+    `goBack: no back/close affordance tappable after 10 attempts. ` +
+      `screenshot=${screenshotPath} viewHierarchy=${hierarchyPath} lastError=${origMsg}`,
+  );
+  if (lastErr) wrapped.cause = lastErr;
+  rethrowWithCallsite(wrapped, callsite);
 }
 
 export async function typeTextIntoAlertInput(text) {
